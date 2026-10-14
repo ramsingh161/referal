@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(npx prisma *)",
+      "Bash(npm audit *)",
+      "Bash(npm view *)",
+      "WebFetch(domain:pris.ly)",
+      "WebFetch(domain:www.prisma.io)",
+      "Bash(sed -i 's|DATABASE_URL=\"file:./dev.db\"|DATABASE_URL=\"file:./prisma/dev.db\"|' .env)",
+      "Bash(sed -i 's|DATABASE_URL=\"file:./dev.db\"|DATABASE_URL=\"file:./prisma/dev.db\"|' .env.example)",
+      "Bash(sed -i 's|\"./src/generated/prisma/client\"|\"./src/generated/prisma/client.ts\"|' scratch-dbcheck.ts)",
+      "Bash(node scratch-dbcheck.ts)",
+      "Bash(npx tsc *)",
+      "Bash(sed -i 's/font-display/font-heading/g' src/app/page.tsx src/components/wordmark.tsx)",
+      "Bash(sed -i 's/--font-display:/--font-heading:/; s/font-display, \\\\.\\\\.\\\\./font-heading, .../' src/app/globals.css)",
+      "Bash(node -e ' *)",
+      "Bash(npx vitest *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\); console.log\\(JSON.stringify\\(p.dependencies,null,2\\)\\)\")"
+    ]
+  }
+}

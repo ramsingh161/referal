@@ -1,0 +1,282 @@
+// ---------------------------------------------------------------------------
+// Referral Finder schema
+//
+// Portability note: every type here is deliberately supported by BOTH SQLite
+// (local dev) and Postgres (production). That means:
+//   - no `enum`      -> status fields are String, validated by Zod in app code
+//   - no `Json`      -> JSON blobs are String, parsed by Zod in app code
+//   - no String[]    -> same
+//   - no @db.* attrs -> provider-specific and would break the swap
+// Switching to Postgres is then a two-line change: the `provider` below and
+// the adapter selected in src/lib/db.ts.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  // Emit explicit .ts extensions on the client's internal imports. Required
+  // because the seed script runs under plain Node ESM, which will not resolve
+  // extensionless relative imports. Next.js/Turbopack resolves .ts fine, and
+  // tsconfig sets allowImportingTsExtensions for the type checker.
+  importFileExtension = "ts"
+}
+
+// Prisma 7: no `url` here. The connection string for Migrate lives in
+// prisma.config.ts; the runtime client connects via a driver adapter.
+datasource db {
+  provider = "sqlite"
+}
+
+// ---------------------------------------------------------------------------
+// Auth.js (NextAuth v5) models — shape dictated by @auth/prisma-adapter
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+
+  /// LinkedIn OIDC `sub` claim, denormalised from Account.providerAccountId
+  /// for cheap lookups.
+  linkedinSub String? @unique
+
+  /// JSON-encoded JobPreferences (see src/lib/prefs.ts). String, not Json,
+  /// for SQLite/Postgres portability.
+  prefsJson String?
+
+  /// Set once the user has uploaded a connections export AND saved prefs.
+  onboardedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  connections Connection[]
+  searchRuns  SearchRun[]
+  matches     Match[]
+  asks        ReferralAsk[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Connections — parsed from the user's own LinkedIn data export.
+//
+// PRIVACY: rows here describe people who are NOT users of this app and have
+// not consented to its processing. Every query MUST be scoped by userId (see
+// the scoped helpers in src/lib/db.ts) and everything cascades on user delete.
+// ---------------------------------------------------------------------------
+
+model Connection {
+  id     String @id @default(cuid())
+  userId String
+
+  firstName  String
+  lastName   String
+  profileUrl String?
+  position   String?
+
+  /// Company exactly as it appeared in the CSV, preserved for display and for
+  /// re-resolution if the normaliser improves later.
+  companyRaw String
+
+  /// Result of normalize(companyRaw). Empty string when the CSV had no company.
+  companyNorm String
+
+  /// Resolved canonical company, once matched. Null while unresolved.
+  companyId String?
+
+  connectedOn DateTime?
+  createdAt   DateTime  @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  asks    ReferralAsk[]
+
+  /// Dedupe key for re-uploads: the same person at the same company should not
+  /// be inserted twice when a user re-uploads a refreshed export.
+  @@unique([userId, firstName, lastName, companyRaw])
+  @@index([userId, companyId])
+  @@index([userId, companyNorm])
+}
+
+// ---------------------------------------------------------------------------
+// Company + JobPosting are GLOBAL, not per-user. That is what makes the ATS
+// registry and the job cache compound: one user resolving "Acme" to its
+// Greenhouse board fixes it for everyone.
+// ---------------------------------------------------------------------------
+
+model Company {
+  id String @id @default(cuid())
+
+  /// normalize(displayName) — the join key against Connection.companyNorm.
+  nameNorm    String @unique
+  displayName String
+
+  /// One of the ATS_PROVIDERS in src/lib/ats/types.ts, once known.
+  atsProvider String?
+  /// Board token/slug within that provider, e.g. "stripe".
+  atsToken String?
+
+  /// "unresolved" | "resolved" | "no_board" | "manual"
+  /// no_board = probed and genuinely has no public ATS board (negative cache).
+  resolveStatus String @default("unresolved")
+
+  /// Drives the negative-cache TTL, so we don't re-probe dead companies hourly.
+  lastProbedAt DateTime?
+  /// Drives the job-cache TTL.
+  lastFetchedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connections Connection[]
+  jobs        JobPosting[]
+
+  @@unique([atsProvider, atsToken])
+  @@index([resolveStatus])
+}
+
+model JobPosting {
+  id        String @id @default(cuid())
+  companyId String
+
+  /// ATS provider this was fetched from.
+  source String
+  /// Provider's own id for the posting.
+  externalId String
+
+  title      String
+  location   String?
+  remote     Boolean @default(false)
+  department String?
+  url        String
+
+  postedAt  DateTime?
+  fetchedAt DateTime  @default(now())
+
+  /// Flipped false when a posting disappears from the board rather than being
+  /// deleted, so existing Matches and ReferralAsks keep their referent.
+  isOpen Boolean @default(true)
+
+  company Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  matches Match[]
+  asks    ReferralAsk[]
+
+  @@unique([source, externalId])
+  @@index([companyId, isOpen])
+}
+
+// ---------------------------------------------------------------------------
+// Search + results
+// ---------------------------------------------------------------------------
+
+model SearchRun {
+  id     String @id @default(cuid())
+  userId String
+
+  /// "running" | "done" | "failed"
+  status String @default("running")
+
+  /// Progress counters, polled by the client to render "Checked 47/210…".
+  companiesTotal   Int @default(0)
+  companiesChecked Int @default(0)
+  jobsFound        Int @default(0)
+  matchesCreated   Int @default(0)
+
+  /// JSON-encoded array of non-fatal per-company errors.
+  errorsJson String?
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startedAt])
+}
+
+model Match {
+  id           String @id @default(cuid())
+  userId       String
+  jobPostingId String
+
+  score Float
+
+  /// Denormalised count of the user's connections at this company, so the
+  /// results grid can sort and render without an extra aggregation.
+  connectionCount Int @default(0)
+
+  /// "new" | "saved" | "dismissed" | "asked"
+  state String @default("new")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  JobPosting @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobPostingId])
+  @@index([userId, state, score])
+}
+
+model ReferralAsk {
+  id           String @id @default(cuid())
+  userId       String
+  connectionId String
+  jobPostingId String
+
+  /// "drafted" | "sent" | "responded" | "referred" | "closed"
+  status String @default("drafted")
+
+  /// The drafted message, kept so the user can see what they sent.
+  message String?
+  notes   String?
+
+  askedAt   DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  job        JobPosting @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, connectionId, jobPostingId])
+  @@index([userId, status])
+}

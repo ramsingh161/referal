@@ -1,0 +1,10 @@
+{
+  "$note": "Curated company -> ATS board bindings, seeded into the global Company table by prisma/seed.ts. Every entry is verified against a live board by src/lib/company/registry.live.test.ts (npm run test:ats), which fails the suite on a stale token. To grow this file, add an entry and run that suite to confirm the token is real before committing. Everything NOT listed here is still resolved at runtime by the slug-probe and manual-URL layers in src/lib/company/resolve.ts, so this list is a fast-path cache, not the whole universe. SmartRecruiters tokens are case-sensitive and cannot be slug-probed, so they especially belong here.",
+  "companies": [
+    { "name": "Stripe", "provider": "greenhouse", "token": "stripe", "verified": true },
+    { "name": "Spotify", "provider": "lever", "token": "spotify", "verified": true },
+    { "name": "Ashby", "provider": "ashby", "token": "ashby", "verified": true },
+    { "name": "Zego", "provider": "workable", "token": "zego", "verified": true },
+    { "name": "Fiverr", "provider": "smartrecruiters", "token": "Fiverr", "verified": true }
+  ]
+}
